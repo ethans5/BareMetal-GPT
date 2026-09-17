@@ -25,3 +25,12 @@ _deps/
 .DS_Store
 Thumbs.db
 *.tmp
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Poids exportés (fichiers lourds, non versionnés)
+weights/

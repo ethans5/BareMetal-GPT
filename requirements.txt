@@ -1,0 +1,11 @@
+# BareMetal-GPT — D?pendances Python (Phase 2+)
+# Installer avec : pip install -r requirements.txt
+
+# Export des poids GPT-2 et micro-mod?le ? scripts/export_weights.py
+torch>=2.0.0
+transformers>=4.35.0
+safetensors>=0.4.0
+
+# Dump des tenseurs de r?f?rence ? scripts/dump_reference.py (Livrable 2)
+numpy>=1.24.0
+

@@ -7,7 +7,7 @@
 
 ## Overview
 
-BareMetal-GPT loads the official GPT-2 Small weights and runs autoregressive text generation entirely in C++.  
+BareMetal-GPT loads official GPT-2 Small weights and runs autoregressive text generation entirely in C++.  
 The goal is not to compete with optimized runtimes, but to **understand every layer** by implementing it from raw math.
 
 ### Two-Model Strategy
@@ -53,16 +53,17 @@ Both models are **structurally identical** (same pre-norm order, same GELU varia
 
 ---
 
-## Project Phases
+## Project Roadmap
 
 | Phase | Description | Status |
 |---|---|---|
 | **0 — Scoping** | Lock architecture, dimensions, activation, norm order | ✅ Done |
 | **1 — Tensor** | Core `Tensor` class, element access, reshape, transpose, matmul | ✅ Done |
-| **2 — Weight loading** | Parse `.safetensors`, load into Tensors | 🔧 Next |
+| **2 — Weight Loading & Ref** | Export `.safetensors`, reference dumps, C++ `WeightLoader` | 🔧 In Progress |
 | 3 — Layers | LayerNorm, GELU, Linear, Attention, FeedForward | ⬜ Planned |
 | 4 — Transformer | Assemble full GPT-2 forward pass | ⬜ Planned |
-| 5 — Tokenizer & CLI | BPE tokenizer + `ChatCLI` demo | ⬜ Planned |
+| 5 — Tokenizer & CLI | BPE tokenizer + `ChatCLI` demo + KV-Cache | ⬜ Planned |
+| 6 — Performance | Cache tiling & multithreading | ⬜ Planned |
 
 ---
 
@@ -87,7 +88,50 @@ The `Tensor` class and matrix multiplication engine are the computational founda
 - **23 Tensor tests** (`test_tensor`): memory layout, bounds checking, exceptions, 1D/2D/3D reshape & transpose.
 - **7 MatMul tests** (`test_matmul`): square, non-square, row-matrix, identity, 1x1 edge cases, dimension mismatch & non-2D error checking.
 
-### Building & Running Tests
+---
+
+## Phase 2 — Weights & Reference Tooling (In Progress 🔧)
+
+Phase 2 builds the external bridge: exporting weights, establishing a surgical ground-truth debugging tool, and loading weights into C++ `Tensor` objects.
+
+### Deliverable 1 — Weight Export (`scripts/export_weights.py`) ✅
+
+- **HuggingFace Conv1D Transposition**: Standard PyTorch linear layers store weights in `[out_features, in_features]`, whereas HuggingFace GPT-2 `Conv1D` stores `[in_features, out_features]`. Weights are pre-transposed during export so the C++ engine consumes uniform `[out, in]` tensors.
+- **Artifacts Generated (`weights/`)**:
+  - `gpt2_weights.safetensors` (474.7 MB): 148 tensors for full GPT-2 124M.
+  - `gpt2_config.json`: architectural hyperparameters.
+  - `micro_gpt2_weights.safetensors` (473 KB): 28 tensors for reproducible unit testing (`d_model=64`, `n_layers=2`, `n_heads=2`, seed 42).
+  - `micro_gpt2_config.json`: micro model configuration.
+- **Post-export Round-Trip Verification**: Automatic reload check confirming tensor counts, `float32` precision, and contiguous memory layout.
+
+### Upcoming Deliverables
+
+- **Deliverable 2**: `scripts/dump_reference.py` — forward pass dump of intermediate activations (`.npy`) for exact layer-by-layer C++ numerical validation.
+- **Deliverable 3**: C++ `WeightLoader` — parser for `.safetensors` format populating `Tensor` instances.
+
+---
+
+## Setup & Development
+
+### 1. Python Environment (Weights & Tooling)
+
+We isolate all Python tooling inside a local virtual environment:
+
+```powershell
+# Create virtual environment
+python -m venv .venv
+
+# Activate environment (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Export model weights (.safetensors)
+python scripts/export_weights.py
+```
+
+### 2. C++ Build & Tests
 
 ```bash
 # Configure (downloads Google Test automatically via FetchContent)
@@ -100,17 +144,22 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### Project structure
+---
+
+## Project Structure
 
 ```
 BareMetal-GPT/
 ├── CMakeLists.txt                        # Root build — lib + strict compiler flags
+├── requirements.txt                      # Python dependencies (torch, transformers, safetensors)
 ├── include/baremetalgpt/
 │   ├── Tensor.hpp                        # Tensor class declaration
 │   └── matmul.hpp                        # Matrix multiplication function declaration
 ├── src/
 │   ├── Tensor.cpp                        # Tensor implementation (at, reshape, transpose)
 │   └── matmul.cpp                        # matmul implementation (cache-friendly i-k-j)
+├── scripts/
+│   └── export_weights.py                 # Weight exporter (GPT-2 & micro model to .safetensors)
 ├── tests/
 │   ├── CMakeLists.txt                    # GTest v1.14.0 via FetchContent
 │   ├── test_tensor.cpp                   # 23 unit tests for Tensor
@@ -124,10 +173,12 @@ BareMetal-GPT/
 
 - **C++17** compiler (GCC ≥ 9, Clang ≥ 10, MSVC ≥ 19.14)
 - **CMake ≥ 3.20**
-- Internet connection on first build (to fetch Google Test)
+- **Python ≥ 3.10** (for weight export & reference dumps)
+- Internet connection on first build/export (fetches Google Test and HuggingFace weights)
 
 ---
 
 ## License
 
 This is a personal learning project. No license has been chosen yet.
+
