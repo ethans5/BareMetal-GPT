@@ -34,3 +34,4 @@ __pycache__/
 
 # Poids exportés (fichiers lourds, non versionnés)
 weights/
+reference_dumps/

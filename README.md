@@ -92,22 +92,48 @@ The `Tensor` class and matrix multiplication engine are the computational founda
 
 ## Phase 2 — Weights & Reference Tooling (In Progress 🔧)
 
-Phase 2 builds the external bridge: exporting weights, establishing a surgical ground-truth debugging tool, and loading weights into C++ `Tensor` objects.
+Phase 2 builds the external bridge between Python/HuggingFace and the C++ engine: exporting weights, producing surgical ground-truth dumps for every intermediate tensor, and laying the groundwork for the C++ `WeightLoader`.
 
 ### Deliverable 1 — Weight Export (`scripts/export_weights.py`) ✅
 
-- **HuggingFace Conv1D Transposition**: Standard PyTorch linear layers store weights in `[out_features, in_features]`, whereas HuggingFace GPT-2 `Conv1D` stores `[in_features, out_features]`. Weights are pre-transposed during export so the C++ engine consumes uniform `[out, in]` tensors.
-- **Artifacts Generated (`weights/`)**:
-  - `gpt2_weights.safetensors` (474.7 MB): 148 tensors for full GPT-2 124M.
-  - `gpt2_config.json`: architectural hyperparameters.
-  - `micro_gpt2_weights.safetensors` (473 KB): 28 tensors for reproducible unit testing (`d_model=64`, `n_layers=2`, `n_heads=2`, seed 42).
-  - `micro_gpt2_config.json`: micro model configuration.
-- **Post-export Round-Trip Verification**: Automatic reload check confirming tensor counts, `float32` precision, and contiguous memory layout.
+- **HuggingFace Conv1D Transposition**: HuggingFace GPT-2 uses custom `Conv1D` layers that store weights as `[in, out]`, opposite of the standard `[out, in]` convention. Weights are pre-transposed at export time so the C++ engine always receives uniform `[out, in]` tensors — no special casing needed in the loader.
+- **Artifacts generated in `weights/`**:
+  - `gpt2_weights.safetensors` (474.7 MB) — 148 tensors, full GPT-2 124M.
+  - `gpt2_config.json` — architectural hyperparameters.
+  - `micro_gpt2_weights.safetensors` (473 KB) — 28 tensors, reproducible micro model (`d_model=64`, `n_layers=2`, `n_heads=2`, seed 42).
+  - `micro_gpt2_config.json` — micro model configuration.
+- **Round-trip verification**: automatic reload after export confirms tensor counts, `float32` dtype, and physical contiguity.
 
-### Upcoming Deliverables
+### Deliverable 2 — Reference Dumps (`scripts/dump_reference.py`) ✅
 
-- **Deliverable 2**: `scripts/dump_reference.py` — forward pass dump of intermediate activations (`.npy`) for exact layer-by-layer C++ numerical validation.
-- **Deliverable 3**: C++ `WeightLoader` — parser for `.safetensors` format populating `Tensor` instances.
+Runs a manual, step-by-step GPT-2 forward pass and saves every intermediate tensor as a `.npy` file. These are the ground-truth values used in all C++ unit tests from Phase 3 onwards.
+
+- **Strategy**: instead of PyTorch hooks, the forward pass is implemented by hand, calling each sublayer in order. This captures everything — including intermediate steps *inside* the attention block (unscaled scores, causal mask, post-softmax probabilities, per-head weighted sums) that hooks cannot reach.
+- **45 files generated in `reference_dumps/micro/`** for the fixed input `[42, 105, 12, 88]`:
+
+  | Tensor | Shape | Meaning |
+  |---|---|---|
+  | `token_embeddings` | `[4, 64]` | `wte(input_ids)` |
+  | `position_embeddings` | `[4, 64]` | `wpe([0,1,2,3])` |
+  | `initial_hidden` | `[4, 64]` | sum of both embeddings |
+  | `block_N_ln1_out` | `[4, 64]` | pre-attention LayerNorm |
+  | `block_N_q/k/v` | `[2, 4, 32]` | Q, K, V per head |
+  | `block_N_attn_probs` | `[2, 4, 4]` | attention weights after softmax |
+  | `block_N_mlp_gelu_out` | `[4, 256]` | GELU activation (tanh approx) |
+  | `logits` | `[4, 256]` | vocabulary projections |
+  | `metadata.json` | — | config + input_ids for C++ loaders |
+
+- **Sanity check**: manual logits vs. HuggingFace output — max absolute diff = **1.49e-07** (threshold: 1e-4 ✅).
+- **Usage**:
+  ```powershell
+  python scripts/dump_reference.py          # micro model (default, fast)
+  python scripts/dump_reference.py --full   # full GPT-2 124M
+  python scripts/dump_reference.py --both   # both
+  ```
+
+### Upcoming — Deliverable 3
+
+- **C++ `WeightLoader`**: parser for `.safetensors` binary format (JSON header + raw float32 blobs) that populates `Tensor` objects, using `gpt2_config.json` to know dimensions.
 
 ---
 
@@ -118,17 +144,21 @@ Phase 2 builds the external bridge: exporting weights, establishing a surgical g
 We isolate all Python tooling inside a local virtual environment:
 
 ```powershell
-# Create virtual environment
+# Create virtual environment (one time)
 python -m venv .venv
 
-# Activate environment (PowerShell)
+# Activate environment (every session)
 .\.venv\Scripts\Activate.ps1
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Export model weights (.safetensors)
+# Deliverable 1 — Export GPT-2 weights to .safetensors
 python scripts/export_weights.py
+
+# Deliverable 2 — Dump forward-pass reference tensors to .npy
+python scripts/dump_reference.py           # micro model (fast)
+python scripts/dump_reference.py --full    # full GPT-2 124M
 ```
 
 ### 2. C++ Build & Tests
@@ -159,7 +189,8 @@ BareMetal-GPT/
 │   ├── Tensor.cpp                        # Tensor implementation (at, reshape, transpose)
 │   └── matmul.cpp                        # matmul implementation (cache-friendly i-k-j)
 ├── scripts/
-│   └── export_weights.py                 # Weight exporter (GPT-2 & micro model to .safetensors)
+│   ├── export_weights.py                 # Deliverable 1: export GPT-2 & micro weights to .safetensors
+│   └── dump_reference.py                 # Deliverable 2: dump all forward-pass intermediates to .npy
 ├── tests/
 │   ├── CMakeLists.txt                    # GTest v1.14.0 via FetchContent
 │   ├── test_tensor.cpp                   # 23 unit tests for Tensor
