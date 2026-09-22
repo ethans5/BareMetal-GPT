@@ -38,3 +38,23 @@ target_link_libraries(test_matmul
 )
 
 gtest_discover_tests(test_matmul)
+
+# ---------- WeightLoader tests ----------
+add_executable(test_weight_loader
+    test_weight_loader.cpp
+)
+
+target_link_libraries(test_weight_loader
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+# Inject absolute paths at compile time so tests locate weight files
+# regardless of the working directory used by ctest.
+target_compile_definitions(test_weight_loader
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+)
+
+gtest_discover_tests(test_weight_loader)

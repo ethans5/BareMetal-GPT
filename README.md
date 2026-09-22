@@ -59,7 +59,7 @@ Both models are **structurally identical** (same pre-norm order, same GELU varia
 |---|---|---|
 | **0 — Scoping** | Lock architecture, dimensions, activation, norm order | ✅ Done |
 | **1 — Tensor** | Core `Tensor` class, element access, reshape, transpose, matmul | ✅ Done |
-| **2 — Weight Loading & Ref** | Export `.safetensors`, reference dumps, C++ `WeightLoader` | 🔧 In Progress |
+| **2 — Weight Loading & Ref** | Export `.safetensors`, reference dumps, C++ `WeightLoader` | ✅ Done |
 | 3 — Layers | LayerNorm, GELU, Linear, Attention, FeedForward | ⬜ Planned |
 | 4 — Transformer | Assemble full GPT-2 forward pass | ⬜ Planned |
 | 5 — Tokenizer & CLI | BPE tokenizer + `ChatCLI` demo + KV-Cache | ⬜ Planned |
@@ -84,15 +84,16 @@ The `Tensor` class and matrix multiplication engine are the computational founda
 
 ### Testing & Validation
 
-30 unit tests powered by Google Test (100% passing):
+44 unit tests powered by Google Test (100% passing):
 - **23 Tensor tests** (`test_tensor`): memory layout, bounds checking, exceptions, 1D/2D/3D reshape & transpose.
 - **7 MatMul tests** (`test_matmul`): square, non-square, row-matrix, identity, 1x1 edge cases, dimension mismatch & non-2D error checking.
+- **14 WeightLoader tests** (`test_weight_loader`): tensor count, key lookup, full key list, shape validation for all layer types, numeric round-trip, error handling.
 
 ---
 
-## Phase 2 — Weights & Reference Tooling (In Progress 🔧)
+## Phase 2 — Weights & Reference Tooling (Completed ✅)
 
-Phase 2 builds the external bridge between Python/HuggingFace and the C++ engine: exporting weights, producing surgical ground-truth dumps for every intermediate tensor, and laying the groundwork for the C++ `WeightLoader`.
+Phase 2 builds the external bridge between Python/HuggingFace and the C++ engine: exporting weights, producing surgical ground-truth dumps for every intermediate tensor, and the C++ `WeightLoader` that ingests them.
 
 ### Deliverable 1 — Weight Export (`scripts/export_weights.py`) ✅
 
@@ -131,9 +132,31 @@ Runs a manual, step-by-step GPT-2 forward pass and saves every intermediate tens
   python scripts/dump_reference.py --both   # both
   ```
 
-### Upcoming — Deliverable 3
+### Deliverable 3 — C++ WeightLoader (`include/baremetalgpt/WeightLoader.hpp`) ✅
 
-- **C++ `WeightLoader`**: parser for `.safetensors` binary format (JSON header + raw float32 blobs) that populates `Tensor` objects, using `gpt2_config.json` to know dimensions.
+A zero-dependency `.safetensors` parser written entirely in C++17 stdlib — no external JSON library.
+
+**Binary format parsed**:
+```
+[8 bytes]  uint64_le        — byte length of the JSON header (N)
+[N bytes]  UTF-8 JSON       — map: name → {dtype, shape, data_offsets:[begin, end]}
+[blob]     raw float32 data — tensor buffers concatenated
+```
+`data_offsets` are relative to the blob start (byte 8+N), not the file start.
+
+**API**:
+```cpp
+bmgpt::WeightLoader loader("weights/micro_gpt2_weights.safetensors");
+Tensor wte = loader.load("wte.weight");   // shape [256, 64]
+bool ok     = loader.has("ln_f.bias");    // true
+size_t n    = loader.num_tensors();       // 28
+```
+
+**Design decisions**:
+- **Lazy I/O**: header parsed once at construction; each `load()` opens, seeks, reads, closes — no persistent file descriptor.
+- **Strict validation**: dtype must be `F32`; byte range verified against `numel * sizeof(float)` at parse time.
+- **Error propagation**: every failure path throws a descriptive `std::runtime_error`.
+- **14 unit tests** in `tests/test_weight_loader.cpp`: tensor count, key lookup, full 28-key enumeration, shape checks for all layer types, numeric round-trip (tolerance 1e-6), and error handling (missing file, unknown key).
 
 ---
 
@@ -184,17 +207,20 @@ BareMetal-GPT/
 ├── requirements.txt                      # Python dependencies (torch, transformers, safetensors)
 ├── include/baremetalgpt/
 │   ├── Tensor.hpp                        # Tensor class declaration
-│   └── matmul.hpp                        # Matrix multiplication function declaration
+│   ├── matmul.hpp                        # Matrix multiplication function declaration
+│   └── WeightLoader.hpp                  # .safetensors parser declaration
 ├── src/
 │   ├── Tensor.cpp                        # Tensor implementation (at, reshape, transpose)
-│   └── matmul.cpp                        # matmul implementation (cache-friendly i-k-j)
+│   ├── matmul.cpp                        # matmul implementation (cache-friendly i-k-j)
+│   └── WeightLoader.cpp                  # .safetensors parser (zero-dependency, stdlib only)
 ├── scripts/
 │   ├── export_weights.py                 # Deliverable 1: export GPT-2 & micro weights to .safetensors
 │   └── dump_reference.py                 # Deliverable 2: dump all forward-pass intermediates to .npy
 ├── tests/
 │   ├── CMakeLists.txt                    # GTest v1.14.0 via FetchContent
 │   ├── test_tensor.cpp                   # 23 unit tests for Tensor
-│   └── test_matmul.cpp                   # 7 unit tests for matmul
+│   ├── test_matmul.cpp                   # 7 unit tests for matmul
+│   └── test_weight_loader.cpp            # 14 unit tests for WeightLoader
 └── README.md                             # Project overview and documentation
 ```
 

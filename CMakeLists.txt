@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(baremetalgpt
     src/Tensor.cpp
     src/matmul.cpp
+    src/WeightLoader.cpp
 )
 
 target_include_directories(baremetalgpt
