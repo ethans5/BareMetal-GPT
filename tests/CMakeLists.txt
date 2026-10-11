@@ -97,3 +97,22 @@ target_compile_definitions(test_activations
 )
 
 gtest_discover_tests(test_activations)
+
+# ---------- Linear tests ----------
+add_executable(test_linear
+    test_linear.cpp
+)
+
+target_link_libraries(test_linear
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_linear
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_linear)

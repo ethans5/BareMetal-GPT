@@ -14,6 +14,7 @@ add_library(baremetalgpt
     src/matmul.cpp
     src/WeightLoader.cpp
     src/LayerNorm.cpp
+    src/Linear.cpp
 )
 
 target_include_directories(baremetalgpt
