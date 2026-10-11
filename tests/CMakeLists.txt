@@ -79,3 +79,21 @@ target_compile_definitions(test_layer_norm
 )
 
 gtest_discover_tests(test_layer_norm)
+
+# ---------- Activations (GELU) tests ----------
+add_executable(test_activations
+    test_activations.cpp
+)
+
+target_link_libraries(test_activations
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_activations
+    PRIVATE
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_activations)
