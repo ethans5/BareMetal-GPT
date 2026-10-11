@@ -13,6 +13,7 @@ add_library(baremetalgpt
     src/Tensor.cpp
     src/matmul.cpp
     src/WeightLoader.cpp
+    src/LayerNorm.cpp
 )
 
 target_include_directories(baremetalgpt

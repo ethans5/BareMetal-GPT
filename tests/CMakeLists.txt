@@ -58,3 +58,24 @@ target_compile_definitions(test_weight_loader
 )
 
 gtest_discover_tests(test_weight_loader)
+
+# ---------- LayerNorm tests ----------
+add_executable(test_layer_norm
+    test_layer_norm.cpp
+)
+
+target_link_libraries(test_layer_norm
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+# Inject absolute paths at compile time so tests locate weight + dump files
+# regardless of the working directory used by ctest.
+target_compile_definitions(test_layer_norm
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_layer_norm)
