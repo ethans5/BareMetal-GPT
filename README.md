@@ -60,7 +60,7 @@ Both models are **structurally identical** (same pre-norm order, same GELU varia
 | **0 — Scoping** | Lock architecture, dimensions, activation, norm order | ✅ Done |
 | **1 — Tensor** | Core `Tensor` class, element access, reshape, transpose, matmul | ✅ Done |
 | **2 — Weight Loading & Ref** | Export `.safetensors`, reference dumps, C++ `WeightLoader` | ✅ Done |
-| 3 — Layers | LayerNorm, GELU, Linear, Attention, FeedForward | ⬜ Planned |
+| **3 — Layers** | LayerNorm, GELU (tanh), Linear, MLP, CausalSelfAttention | ✅ Done |
 | 4 — Transformer | Assemble full GPT-2 forward pass | ⬜ Planned |
 | 5 — Tokenizer & CLI | BPE tokenizer + `ChatCLI` demo + KV-Cache | ⬜ Planned |
 | 6 — Performance | Cache tiling & multithreading | ⬜ Planned |
@@ -84,10 +84,9 @@ The `Tensor` class and matrix multiplication engine are the computational founda
 
 ### Testing & Validation
 
-44 unit tests powered by Google Test (100% passing):
+30 unit tests powered by Google Test:
 - **23 Tensor tests** (`test_tensor`): memory layout, bounds checking, exceptions, 1D/2D/3D reshape & transpose.
 - **7 MatMul tests** (`test_matmul`): square, non-square, row-matrix, identity, 1x1 edge cases, dimension mismatch & non-2D error checking.
-- **14 WeightLoader tests** (`test_weight_loader`): tensor count, key lookup, full key list, shape validation for all layer types, numeric round-trip, error handling.
 
 ---
 
@@ -160,6 +159,64 @@ size_t n    = loader.num_tensors();       // 28
 
 ---
 
+## Phase 3 — Layers & Attention (Completed ✅)
+
+Phase 3 builds the five computational building blocks that form the heart of the Transformer architecture, each numerically verified against the Phase 2 ground-truth dumps with strict precision (`max_abs_diff < 1e-4`).
+
+### What's implemented
+
+1. **`LayerNorm` (`include/baremetalgpt/LayerNorm.hpp`, `src/LayerNorm.cpp`)**
+   - Implements GPT-2 pre-norm layer normalization:
+     $$y = \gamma \cdot \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta$$
+   - **Numerical stability**: two-pass calculation of mean and variance to prevent catastrophic cancellation, with $\epsilon = 10^{-5}$ matching PyTorch.
+   - **Row-wise normalization**: token activations $[T, d_{model}]$ are normalized independently per token row. Reciprocal standard deviation $(1 / \sqrt{\sigma^2 + \epsilon})$ is computed once per row.
+   - **Validation**: verified against `block_0_ln1_out.npy`, `block_0_ln2_out.npy`, and `final_ln_out.npy` (max error $< 2.4 \times 10^{-7}$).
+
+2. **`GELU` (`include/baremetalgpt/activations.hpp`)**
+   - Exact `gelu_new` tanh approximation variant matching HuggingFace/PyTorch:
+     $$\text{GELU}(x) \approx 0.5 \cdot x \cdot \left(1 + \tanh\left(\sqrt{\frac{2}{\pi}} \cdot \left(x + 0.044715 \cdot x^3\right)\right)\right)$$
+   - **Zero overhead**: inline scalar implementation using double-precision constants ($\sqrt{2/\pi} \approx 0.7978845608028654$) and element-wise `Tensor` overload preserving value semantics.
+   - **Validation**: verified against analytical test points and intermediate dumps `block_N_mlp_gelu_out.npy` (max error $< 1.2 \times 10^{-7}$).
+
+3. **`Linear` (`include/baremetalgpt/Linear.hpp`, `src/Linear.cpp`)**
+   - Affine transformation layer: $y = x \cdot W^T + b$.
+   - **Memory locality**: $W$ is stored in standard `[out, in]` format and physically transposed to `[in, out]` prior to `matmul`, ensuring optimal cache-line streaming in the $i, k, j$ multiplication kernel.
+   - **Broadcast addition**: bias vector is added row-wise across all sequence positions.
+   - **Validation**: verified across all 4 linear projections (`c_attn`, `c_proj`, `c_fc`, `c_proj`) against reference dumps (max error $< 3.5 \times 10^{-7}$).
+
+4. **`FeedForward` / MLP (`include/baremetalgpt/FeedForward.hpp`, `src/FeedForward.cpp`)**
+   - Two-layer feed-forward network:
+     $$\text{FFN}(x) = \text{Linear}_{\text{proj}}(\text{GELU}(\text{Linear}_{\text{fc}}(x)))$$
+   - Projects $d_{model} \to d_{ff}$ (4x expansion), applies GELU, and contracts $d_{ff} \to d_{model}$.
+   - Construction supported via direct `WeightLoader` prefix (e.g. `"h.0.mlp"`) or explicit layer injection.
+   - **Validation**: step-by-step and full forward pass verified against `block_N_mlp_proj_out.npy` (max error $< 3.8 \times 10^{-7}$).
+
+5. **`CausalSelfAttention` (`include/baremetalgpt/CausalSelfAttention.hpp`, `src/CausalSelfAttention.cpp`)**
+   - Multi-head causal self-attention with scaled dot-product:
+     1. **Fused QKV projection**: single forward pass $[T, d_{model}] \to [T, 3 \cdot d_{model}]$ via `c_attn`.
+     2. **Head splitting**: sliced into $H$ heads of dimension $d_{head} = d_{model} / H$.
+     3. **Scaled dot-product**: $(Q_h \cdot K_h^T) / \sqrt{d_{head}}$.
+     4. **Causal masking**: upper-triangular masking ($j > i$) prevents tokens from attending to the future.
+     5. **Stable softmax**: max-subtracted softmax prevents float32 overflow.
+     6. **Weighted accumulation**: attention probabilities multiplied by $V_h$.
+     7. **Head concatenation & projection**: merged heads $[T, d_{model}]$ projected via `c_proj`.
+   - **Causality invariant**: strictly verified that token $0$ output in $[x_0, x_1, \dots]$ matches $[x_0]$ alone.
+   - **Validation**: verified against `block_0_attn_proj.npy` and `block_1_attn_proj.npy` (max error $< 4.1 \times 10^{-7}$).
+
+### Testing & Validation Summary
+
+**110 unit tests** powered by Google Test (**100% passing**, zero compiler warnings):
+- **23 Tensor tests** (`test_tensor`): memory, indexing, bounds, reshape, transpose.
+- **7 MatMul tests** (`test_matmul`): 2D algebra, shapes, cache-friendly kernel correctness.
+- **14 WeightLoader tests** (`test_weight_loader`): header parsing, key discovery, round-trip checks.
+- **13 LayerNorm tests** (`test_layer_norm`): normalization statistics, error paths, numerical dumps match.
+- **18 Activation tests** (`test_activations`): scalar analytical points, tensor preservation, GELU dumps match.
+- **16 Linear tests** (`test_linear`): shapes, bias broadcasting, mathematical limits, projection dumps match.
+- **8 FeedForward tests** (`test_feedforward`): dimensional flow, sublayer validation, full MLP match.
+- **11 CausalSelfAttention tests** (`test_causal_self_attention`): head division, causality invariant, attention dumps match.
+
+---
+
 ## Setup & Development
 
 ### 1. Python Environment (Weights & Tooling)
@@ -208,11 +265,20 @@ BareMetal-GPT/
 ├── include/baremetalgpt/
 │   ├── Tensor.hpp                        # Tensor class declaration
 │   ├── matmul.hpp                        # Matrix multiplication function declaration
-│   └── WeightLoader.hpp                  # .safetensors parser declaration
+│   ├── WeightLoader.hpp                  # .safetensors parser declaration
+│   ├── LayerNorm.hpp                     # Layer normalization declaration
+│   ├── activations.hpp                   # GELU activation functions (scalar & tensor)
+│   ├── Linear.hpp                        # Fully-connected linear layer declaration
+│   ├── FeedForward.hpp                   # Two-layer MLP declaration
+│   └── CausalSelfAttention.hpp           # Multi-head causal self-attention declaration
 ├── src/
 │   ├── Tensor.cpp                        # Tensor implementation (at, reshape, transpose)
 │   ├── matmul.cpp                        # matmul implementation (cache-friendly i-k-j)
-│   └── WeightLoader.cpp                  # .safetensors parser (zero-dependency, stdlib only)
+│   ├── WeightLoader.cpp                  # .safetensors parser (zero-dependency, stdlib only)
+│   ├── LayerNorm.cpp                     # Two-pass LayerNorm implementation
+│   ├── Linear.cpp                        # Linear layer with transposed weight & bias broadcast
+│   ├── FeedForward.cpp                   # FeedForward (c_fc -> GELU -> c_proj) implementation
+│   └── CausalSelfAttention.cpp           # Multi-head attention with causal masking & softmax
 ├── scripts/
 │   ├── export_weights.py                 # Deliverable 1: export GPT-2 & micro weights to .safetensors
 │   └── dump_reference.py                 # Deliverable 2: dump all forward-pass intermediates to .npy
@@ -220,7 +286,12 @@ BareMetal-GPT/
 │   ├── CMakeLists.txt                    # GTest v1.14.0 via FetchContent
 │   ├── test_tensor.cpp                   # 23 unit tests for Tensor
 │   ├── test_matmul.cpp                   # 7 unit tests for matmul
-│   └── test_weight_loader.cpp            # 14 unit tests for WeightLoader
+│   ├── test_weight_loader.cpp            # 14 unit tests for WeightLoader
+│   ├── test_layer_norm.cpp               # 13 unit tests for LayerNorm
+│   ├── test_activations.cpp              # 18 unit tests for GELU
+│   ├── test_linear.cpp                   # 16 unit tests for Linear
+│   ├── test_feedforward.cpp              # 8 unit tests for FeedForward / MLP
+│   └── test_causal_self_attention.cpp    # 11 unit tests for CausalSelfAttention
 └── README.md                             # Project overview and documentation
 ```
 

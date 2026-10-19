@@ -15,6 +15,8 @@ add_library(baremetalgpt
     src/WeightLoader.cpp
     src/LayerNorm.cpp
     src/Linear.cpp
+    src/FeedForward.cpp
+    src/CausalSelfAttention.cpp
 )
 
 target_include_directories(baremetalgpt

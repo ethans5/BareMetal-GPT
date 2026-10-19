@@ -116,3 +116,41 @@ target_compile_definitions(test_linear
 )
 
 gtest_discover_tests(test_linear)
+
+# ---------- FeedForward (MLP) tests ----------
+add_executable(test_feedforward
+    test_feedforward.cpp
+)
+
+target_link_libraries(test_feedforward
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_feedforward
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_feedforward)
+
+# ---------- CausalSelfAttention tests ----------
+add_executable(test_causal_self_attention
+    test_causal_self_attention.cpp
+)
+
+target_link_libraries(test_causal_self_attention
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_causal_self_attention
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_causal_self_attention)
