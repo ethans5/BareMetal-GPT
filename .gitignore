@@ -35,3 +35,6 @@ __pycache__/
 # Poids exportés (fichiers lourds, non versionnés)
 weights/
 reference_dumps/
+
+# Fichiers de travail locaux (plans, TODO internes)
+PHASE4_TODO.md

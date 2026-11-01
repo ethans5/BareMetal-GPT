@@ -17,6 +17,7 @@ add_library(baremetalgpt
     src/Linear.cpp
     src/FeedForward.cpp
     src/CausalSelfAttention.cpp
+    src/Embedding.cpp
 )
 
 target_include_directories(baremetalgpt

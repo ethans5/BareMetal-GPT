@@ -154,3 +154,22 @@ target_compile_definitions(test_causal_self_attention
 )
 
 gtest_discover_tests(test_causal_self_attention)
+
+# ---------- Embedding tests (Phase 4) ----------
+add_executable(test_embedding
+    test_embedding.cpp
+)
+
+target_link_libraries(test_embedding
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_embedding
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_embedding)
