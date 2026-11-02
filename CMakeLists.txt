@@ -18,6 +18,7 @@ add_library(baremetalgpt
     src/FeedForward.cpp
     src/CausalSelfAttention.cpp
     src/Embedding.cpp
+    src/TransformerBlock.cpp
 )
 
 target_include_directories(baremetalgpt

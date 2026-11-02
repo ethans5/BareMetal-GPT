@@ -173,3 +173,22 @@ target_compile_definitions(test_embedding
 )
 
 gtest_discover_tests(test_embedding)
+
+# ---------- TransformerBlock tests (Phase 4) ----------
+add_executable(test_transformer_block
+    test_transformer_block.cpp
+)
+
+target_link_libraries(test_transformer_block
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_transformer_block
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_transformer_block)
