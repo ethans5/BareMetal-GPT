@@ -159,71 +159,6 @@ size_t n    = loader.num_tensors();       // 28
 
 ---
 
-## Phase 4 — Transformer complet (Completed ✅)
-
-Phase 4 assemble les briques de la Phase 3 pour exécuter un forward pass complet `Tokens → Logits`, validé contre PyTorch avec `max_abs_diff < 1e-4`.
-
-### What's implemented
-
-1. **`Embedding` (`include/baremetalgpt/Embedding.hpp`, `src/Embedding.cpp`)**
-   - Somme de la table de tokens (`wte`) et de la table de positions apprises (`wpe`) :
-     $$h_0[i, :] = \text{wte}[\text{input\_ids}[i], :] + \text{wpe}[i, :]$$
-   - Vérification : séquence vide (`std::invalid_argument`), token hors-vocabulaire (`std::out_of_range`), séquence trop longue (`std::length_error`).
-   - Accesseurs `wte()` et `wpe()` exposés pour le weight tying du `Model`.
-   - **Validation** : vérifiée contre `token_embeddings.npy`, `position_embeddings.npy` et `initial_hidden.npy` (max erreur $< 10^{-6}$).
-
-2. **`TransformerBlock` (`include/baremetalgpt/TransformerBlock.hpp`, `src/TransformerBlock.cpp`)**
-   - Bloc décodeur pre-norm GPT-2 — deux sous-couches avec résidus :
-     $$x_1 = x + \text{Attn}(\text{LN}_1(x))$$
-     $$x_2 = x_1 + \text{MLP}(\text{LN}_2(x_1))$$
-   - Composition : `LayerNorm ln_1_`, `CausalSelfAttention attn_`, `LayerNorm ln_2_`, `FeedForward mlp_`.
-   - Préfixe de poids configurable (`"h.0"`, `"h.1"`, …) pour instancier N blocs.
-   - **Validation** : vérifiée contre `block_0_resid1.npy`, `block_0_out.npy`, `block_1_resid1.npy`, `block_1_out.npy` (max erreur $< 10^{-4}$).
-
-3. **`ModelConfig` + `Model` (`include/baremetalgpt/Model.hpp`, `src/Model.cpp`)**
-   - `ModelConfig` : struct plain-old-data (`n_layers`, `n_heads`, `d_model`, `vocab_size`, `context_length`, `d_ff`, `eps`).
-   - Pipeline forward complet :
-     1. $h = \text{Embedding}(\text{input\_ids})$ — $[T, d_\text{model}]$
-     2. Pour $i \in [0, N)$ : $h = \text{TransformerBlock}_i(h)$ — $[T, d_\text{model}]$
-     3. $h = \text{LayerNorm}_f(h)$ — $[T, d_\text{model}]$
-     4. $\text{logits} = h \cdot W_{\text{wte}}^T$ — $[T, \text{vocab\_size}]$
-   - **Weight Tying** : la projection vocabulaire réutilise $W_\text{wte}^T$ pré-transposée au moment de la construction (cache-friendly, zéro paramètre supplémentaire).
-   - **Validation** : logits complets vérifiés contre `logits.npy` (max erreur $< 10^{-4}$), argmax identique à PyTorch.
-
-### Testing & Validation Summary
-
-**151 unit tests** powered by Google Test (**100% passing**, zero compiler warnings, `-Wall -Wextra -Wpedantic -Werror`):
-
-| Suite | Tests | Phase |
-|---|---|---|
-| `test_tensor` | 23 | 1 |
-| `test_matmul` | 7 | 1 |
-| `test_weight_loader` | 14 | 2 |
-| `test_layer_norm` | 13 | 3 |
-| `test_activations` | 18 | 3 |
-| `test_linear` | 16 | 3 |
-| `test_feedforward` | 8 | 3 |
-| `test_causal_self_attention` | 11 | 3 |
-| `test_embedding` | 17 | 4 |
-| `test_transformer_block` | 12 | 4 |
-| `test_model` | 12 | 4 |
-| **Total** | **151** | |
-
-### Précisions numériques observées (micro model, input `[42, 105, 12, 88]`)
-
-| Étape | Dump de référence | Tolérance spec | Max erreur observée |
-|---|---|---|---|
-| Embeddings (wte + wpe) | `initial_hidden.npy` | $< 10^{-6}$ | $< 10^{-7}$ |
-| Block 0 — résidu attention | `block_0_resid1.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
-| Block 0 — sortie complète | `block_0_out.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
-| Block 1 — résidu attention | `block_1_resid1.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
-| Block 1 — sortie complète | `block_1_out.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
-| LayerNorm finale | `final_ln_out.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
-| Logits complets | `logits.npy` | $< 10^{-4}$ | $< 10^{-4}$ |
-| Argmax (next token) | — | exact | ✅ identique à PyTorch |
-
----
-
 ## Phase 3 — Layers & Attention (Completed ✅)
 
 Phase 3 builds the five computational building blocks that form the heart of the Transformer architecture, each numerically verified against the Phase 2 ground-truth dumps with strict precision (`max_abs_diff < 1e-4`).
@@ -268,17 +203,72 @@ Phase 3 builds the five computational building blocks that form the heart of the
    - **Causality invariant**: strictly verified that token $0$ output in $[x_0, x_1, \dots]$ matches $[x_0]$ alone.
    - **Validation**: verified against `block_0_attn_proj.npy` and `block_1_attn_proj.npy` (max error $< 4.1 \times 10^{-7}$).
 
-### Testing & Validation Summary
+### Testing & Validation Summary (Phase 3)
 
-**110 unit tests** powered by Google Test (**100% passing**, zero compiler warnings):
-- **23 Tensor tests** (`test_tensor`): memory, indexing, bounds, reshape, transpose.
-- **7 MatMul tests** (`test_matmul`): 2D algebra, shapes, cache-friendly kernel correctness.
-- **14 WeightLoader tests** (`test_weight_loader`): header parsing, key discovery, round-trip checks.
+66 unit tests added, bringing total to **110 unit tests** powered by Google Test (**100% passing**, zero compiler warnings):
 - **13 LayerNorm tests** (`test_layer_norm`): normalization statistics, error paths, numerical dumps match.
 - **18 Activation tests** (`test_activations`): scalar analytical points, tensor preservation, GELU dumps match.
 - **16 Linear tests** (`test_linear`): shapes, bias broadcasting, mathematical limits, projection dumps match.
 - **8 FeedForward tests** (`test_feedforward`): dimensional flow, sublayer validation, full MLP match.
 - **11 CausalSelfAttention tests** (`test_causal_self_attention`): head division, causality invariant, attention dumps match.
+
+---
+
+## Phase 4 — Full Transformer & Forward Pass (Completed ✅)
+
+Phase 4 integrates the Phase 3 layers with token and positional embeddings to execute a complete `Tokens → Logits` forward pass, validated against PyTorch ground-truth with $\text{max\_abs\_diff} < 10^{-4}$.
+
+### What's implemented
+
+1. **`Embedding` (`include/baremetalgpt/Embedding.hpp`, `src/Embedding.cpp`)**
+   - Combines learned token embeddings (`wte`) and learned position embeddings (`wpe`):
+     $$h_0[i, :] = \text{wte}[\text{input\_ids}[i], :] + \text{wpe}[i, :]$$
+   - **Defensive validation**: throws `std::invalid_argument` on empty input, `std::out_of_range` on negative or out-of-vocabulary tokens ($t_i \ge \text{vocab\_size}$), and `std::length_error` if sequence length exceeds `context_length`.
+   - **Weight tying access**: exposes read-only `wte()` for the final projection layer to reuse token embeddings without memory duplication.
+   - **Validation**: bit-exact row extraction against `token_embeddings.npy` and `position_embeddings.npy`, sum verified against `initial_hidden.npy` (max error $< 1.19 \times 10^{-7}$).
+
+2. **`TransformerBlock` (`include/baremetalgpt/TransformerBlock.hpp`, `src/TransformerBlock.cpp`)**
+   - Full GPT-2 Pre-Norm decoder block orchestrating two residual streams:
+     $$x_1 = x + \text{Attention}(\text{LayerNorm}_1(x))$$
+     $$x_2 = x_1 + \text{MLP}(\text{LayerNorm}_2(x_1))$$
+   - **Sublayer composition**: encapsulates `LayerNorm ln_1_`, `CausalSelfAttention attn_`, `LayerNorm ln_2_`, and `FeedForward mlp_`.
+   - **Consistency checks**: enforces dimension agreement across all sublayers at construction time.
+   - **Validation**: intermediate attention residual verified against `block_N_resid1.npy`, full block output verified against `block_N_out.npy` for blocks 0 and 1 (max error $< 2.15 \times 10^{-5}$).
+
+3. **`Model` & `ModelConfig` (`include/baremetalgpt/Model.hpp`, `src/Model.cpp`)**
+   - **Hyperparameter struct** `ModelConfig`: specifies `n_layers`, `n_heads`, `d_model`, `vocab_size`, `context_length`, `d_ff`, and `eps`.
+   - **End-to-end forward pipeline**:
+     1. $h = \text{Embedding}(\text{input\_ids}) \in \mathbb{R}^{T \times d_{model}}$
+     2. Sequentially for $i \in [0, N)$: $h = \text{TransformerBlock}_i(h)$
+     3. $h = \text{LayerNorm}_f(h)$
+     4. $\text{logits} = h \cdot W_{\text{wte}}^T \in \mathbb{R}^{T \times \text{vocab\_size}}$
+   - **Weight Tying optimization**: $W_{\text{wte}}^T$ of shape $[d_{model}, \text{vocab\_size}]$ is transposed once at construction (`wte_T_`) for cache-optimal contiguous memory traversal in the final `matmul`.
+   - **Validation**: final LayerNorm verified against `final_ln_out.npy`, complete logits verified against `logits.npy` (max error $< 4.77 \times 10^{-5}$), and next-token argmax verified to be identical to PyTorch.
+
+### Testing & Validation Summary (Phase 4)
+
+41 unit tests added, bringing total to **151 unit tests** powered by Google Test (**100% passing**, zero compiler warnings, `-Wall -Wextra -Wpedantic -Werror` / `/W4 /WX`):
+
+| Test Suite | File | Tests | Validated Aspects |
+|---|---|---|---|
+| `test_embedding` | `test_embedding.cpp` | 17 | Shapes, empty input, out-of-bounds tokens, max context overflow, lookup extraction, and `initial_hidden.npy` match. |
+| `test_transformer_block` | `test_transformer_block.cpp` | 12 | Shape preservation ($T=1$, $T=4$), dimension mismatch errors, attention residual, and full block outputs (`block_0/1_out.npy`). |
+| `test_model` | `test_model.cpp` | 12 | Safetensors loading, block indexing, weight-tying matrix shapes, error propagation, `final_ln_out.npy`, `logits.npy`, and PyTorch argmax match. |
+
+### Observed Numerical Accuracies (Micro Model, input `[42, 105, 12, 88]`)
+
+| Stage | Reference Dump | Specified Tolerance | Max Observed Error | Safety Margin |
+|---|---|---|---|---|
+| Token Embeddings (`wte`) | `token_embeddings.npy` | $< 10^{-6}$ | **0.00** (bit-exact) | Absolute |
+| Position Embeddings (`wpe`) | `position_embeddings.npy` | $< 10^{-6}$ | **0.00** (bit-exact) | Absolute |
+| Initial Hidden State ($h_0$) | `initial_hidden.npy` | $< 10^{-6}$ | $< 1.19 \times 10^{-7}$ | $\times 8.4$ |
+| Block 0 — Attention Residual | `block_0_resid1.npy` | $< 10^{-4}$ | $< 8.34 \times 10^{-6}$ | $\times 12.0$ |
+| Block 0 — Full Block Output | `block_0_out.npy` | $< 10^{-4}$ | $< 9.54 \times 10^{-6}$ | $\times 10.5$ |
+| Block 1 — Attention Residual | `block_1_resid1.npy` | $< 10^{-4}$ | $< 1.43 \times 10^{-5}$ | $\times 7.0$ |
+| Block 1 — Full Block Output | `block_1_out.npy` | $< 10^{-4}$ | $< 2.15 \times 10^{-5}$ | $\times 4.6$ |
+| Final LayerNorm (`ln_f`) | `final_ln_out.npy` | $< 10^{-4}$ | $< 1.91 \times 10^{-5}$ | $\times 5.2$ |
+| Full Vocab Logits | `logits.npy` | $< 10^{-4}$ | $< 4.77 \times 10^{-5}$ | $\times 2.1$ |
+| **Next-Token Argmax** | PyTorch reference | Exact match | **Identical** (token 86) | ✅ Passed |
 
 ---
 
