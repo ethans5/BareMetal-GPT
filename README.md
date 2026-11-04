@@ -61,7 +61,7 @@ Both models are **structurally identical** (same pre-norm order, same GELU varia
 | **1 — Tensor** | Core `Tensor` class, element access, reshape, transpose, matmul | ✅ Done |
 | **2 — Weight Loading & Ref** | Export `.safetensors`, reference dumps, C++ `WeightLoader` | ✅ Done |
 | **3 — Layers** | LayerNorm, GELU (tanh), Linear, MLP, CausalSelfAttention | ✅ Done |
-| 4 — Transformer | Assemble full GPT-2 forward pass | ⬜ Planned |
+| **4 — Transformer** | Assemble full GPT-2 forward pass | ✅ Done |
 | 5 — Tokenizer & CLI | BPE tokenizer + `ChatCLI` demo + KV-Cache | ⬜ Planned |
 | 6 — Performance | Cache tiling & multithreading | ⬜ Planned |
 
@@ -156,6 +156,71 @@ size_t n    = loader.num_tensors();       // 28
 - **Strict validation**: dtype must be `F32`; byte range verified against `numel * sizeof(float)` at parse time.
 - **Error propagation**: every failure path throws a descriptive `std::runtime_error`.
 - **14 unit tests** in `tests/test_weight_loader.cpp`: tensor count, key lookup, full 28-key enumeration, shape checks for all layer types, numeric round-trip (tolerance 1e-6), and error handling (missing file, unknown key).
+
+---
+
+## Phase 4 — Transformer complet (Completed ✅)
+
+Phase 4 assemble les briques de la Phase 3 pour exécuter un forward pass complet `Tokens → Logits`, validé contre PyTorch avec `max_abs_diff < 1e-4`.
+
+### What's implemented
+
+1. **`Embedding` (`include/baremetalgpt/Embedding.hpp`, `src/Embedding.cpp`)**
+   - Somme de la table de tokens (`wte`) et de la table de positions apprises (`wpe`) :
+     $$h_0[i, :] = \text{wte}[\text{input\_ids}[i], :] + \text{wpe}[i, :]$$
+   - Vérification : séquence vide (`std::invalid_argument`), token hors-vocabulaire (`std::out_of_range`), séquence trop longue (`std::length_error`).
+   - Accesseurs `wte()` et `wpe()` exposés pour le weight tying du `Model`.
+   - **Validation** : vérifiée contre `token_embeddings.npy`, `position_embeddings.npy` et `initial_hidden.npy` (max erreur $< 10^{-6}$).
+
+2. **`TransformerBlock` (`include/baremetalgpt/TransformerBlock.hpp`, `src/TransformerBlock.cpp`)**
+   - Bloc décodeur pre-norm GPT-2 — deux sous-couches avec résidus :
+     $$x_1 = x + \text{Attn}(\text{LN}_1(x))$$
+     $$x_2 = x_1 + \text{MLP}(\text{LN}_2(x_1))$$
+   - Composition : `LayerNorm ln_1_`, `CausalSelfAttention attn_`, `LayerNorm ln_2_`, `FeedForward mlp_`.
+   - Préfixe de poids configurable (`"h.0"`, `"h.1"`, …) pour instancier N blocs.
+   - **Validation** : vérifiée contre `block_0_resid1.npy`, `block_0_out.npy`, `block_1_resid1.npy`, `block_1_out.npy` (max erreur $< 10^{-4}$).
+
+3. **`ModelConfig` + `Model` (`include/baremetalgpt/Model.hpp`, `src/Model.cpp`)**
+   - `ModelConfig` : struct plain-old-data (`n_layers`, `n_heads`, `d_model`, `vocab_size`, `context_length`, `d_ff`, `eps`).
+   - Pipeline forward complet :
+     1. $h = \text{Embedding}(\text{input\_ids})$ — $[T, d_\text{model}]$
+     2. Pour $i \in [0, N)$ : $h = \text{TransformerBlock}_i(h)$ — $[T, d_\text{model}]$
+     3. $h = \text{LayerNorm}_f(h)$ — $[T, d_\text{model}]$
+     4. $\text{logits} = h \cdot W_{\text{wte}}^T$ — $[T, \text{vocab\_size}]$
+   - **Weight Tying** : la projection vocabulaire réutilise $W_\text{wte}^T$ pré-transposée au moment de la construction (cache-friendly, zéro paramètre supplémentaire).
+   - **Validation** : logits complets vérifiés contre `logits.npy` (max erreur $< 10^{-4}$), argmax identique à PyTorch.
+
+### Testing & Validation Summary
+
+**151 unit tests** powered by Google Test (**100% passing**, zero compiler warnings, `-Wall -Wextra -Wpedantic -Werror`):
+
+| Suite | Tests | Phase |
+|---|---|---|
+| `test_tensor` | 23 | 1 |
+| `test_matmul` | 7 | 1 |
+| `test_weight_loader` | 14 | 2 |
+| `test_layer_norm` | 13 | 3 |
+| `test_activations` | 18 | 3 |
+| `test_linear` | 16 | 3 |
+| `test_feedforward` | 8 | 3 |
+| `test_causal_self_attention` | 11 | 3 |
+| `test_embedding` | 17 | 4 |
+| `test_transformer_block` | 12 | 4 |
+| `test_model` | 12 | 4 |
+| **Total** | **151** | |
+
+### Précisions numériques observées (micro model, input `[42, 105, 12, 88]`)
+
+| Étape | Dump de référence | Tolérance spec | Max erreur observée |
+|---|---|---|---|
+| Embeddings (wte + wpe) | `initial_hidden.npy` | $< 10^{-6}$ | $< 10^{-7}$ |
+| Block 0 — résidu attention | `block_0_resid1.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
+| Block 0 — sortie complète | `block_0_out.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
+| Block 1 — résidu attention | `block_1_resid1.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
+| Block 1 — sortie complète | `block_1_out.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
+| LayerNorm finale | `final_ln_out.npy` | $< 10^{-4}$ | $< 10^{-5}$ |
+| Logits complets | `logits.npy` | $< 10^{-4}$ | $< 10^{-4}$ |
+| Argmax (next token) | — | exact | ✅ identique à PyTorch |
 
 ---
 
@@ -270,7 +335,10 @@ BareMetal-GPT/
 │   ├── activations.hpp                   # GELU activation functions (scalar & tensor)
 │   ├── Linear.hpp                        # Fully-connected linear layer declaration
 │   ├── FeedForward.hpp                   # Two-layer MLP declaration
-│   └── CausalSelfAttention.hpp           # Multi-head causal self-attention declaration
+│   ├── CausalSelfAttention.hpp           # Multi-head causal self-attention declaration
+│   ├── Embedding.hpp                     # Token + positional embedding declaration
+│   ├── TransformerBlock.hpp              # Pre-norm Transformer block declaration
+│   └── Model.hpp                         # Full GPT-2 Model + ModelConfig declaration
 ├── src/
 │   ├── Tensor.cpp                        # Tensor implementation (at, reshape, transpose)
 │   ├── matmul.cpp                        # matmul implementation (cache-friendly i-k-j)
@@ -278,7 +346,10 @@ BareMetal-GPT/
 │   ├── LayerNorm.cpp                     # Two-pass LayerNorm implementation
 │   ├── Linear.cpp                        # Linear layer with transposed weight & bias broadcast
 │   ├── FeedForward.cpp                   # FeedForward (c_fc -> GELU -> c_proj) implementation
-│   └── CausalSelfAttention.cpp           # Multi-head attention with causal masking & softmax
+│   ├── CausalSelfAttention.cpp           # Multi-head attention with causal masking & softmax
+│   ├── Embedding.cpp                     # Token + position embedding (wte + wpe)
+│   ├── TransformerBlock.cpp              # Pre-norm block: LN→Attn(res) + LN→MLP(res)
+│   └── Model.cpp                         # Full GPT-2 pipeline + weight tying
 ├── scripts/
 │   ├── export_weights.py                 # Deliverable 1: export GPT-2 & micro weights to .safetensors
 │   └── dump_reference.py                 # Deliverable 2: dump all forward-pass intermediates to .npy
@@ -291,7 +362,10 @@ BareMetal-GPT/
 │   ├── test_activations.cpp              # 18 unit tests for GELU
 │   ├── test_linear.cpp                   # 16 unit tests for Linear
 │   ├── test_feedforward.cpp              # 8 unit tests for FeedForward / MLP
-│   └── test_causal_self_attention.cpp    # 11 unit tests for CausalSelfAttention
+│   ├── test_causal_self_attention.cpp    # 11 unit tests for CausalSelfAttention
+│   ├── test_embedding.cpp               # 17 unit tests for Embedding (Phase 4)
+│   ├── test_transformer_block.cpp       # 12 unit tests for TransformerBlock (Phase 4)
+│   └── test_model.cpp                   # 12 unit tests for Model — full forward pass (Phase 4)
 └── README.md                             # Project overview and documentation
 ```
 
