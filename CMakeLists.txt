@@ -20,6 +20,7 @@ add_library(baremetalgpt
     src/Embedding.cpp
     src/TransformerBlock.cpp
     src/Model.cpp
+    src/Tokenizer.cpp
 )
 
 target_include_directories(baremetalgpt

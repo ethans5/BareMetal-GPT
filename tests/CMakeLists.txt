@@ -211,3 +211,22 @@ target_compile_definitions(test_model
 )
 
 gtest_discover_tests(test_model)
+
+# ---------- Tokenizer tests (Phase 5) ----------
+add_executable(test_tokenizer
+    test_tokenizer.cpp
+)
+
+target_link_libraries(test_tokenizer
+    PRIVATE
+        baremetalgpt
+        GTest::gtest_main
+)
+
+target_compile_definitions(test_tokenizer
+    PRIVATE
+        WEIGHTS_DIR=${CMAKE_SOURCE_DIR}/weights
+        DUMPS_DIR=${CMAKE_SOURCE_DIR}/reference_dumps/micro
+)
+
+gtest_discover_tests(test_tokenizer)
